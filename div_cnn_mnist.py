@@ -1,5 +1,6 @@
 from __future__ import print_function
 import os
+import sys
 os.environ['KERAS_BACKEND'] = "tensorflow"
 ################################################################################################
 ################################################################################################
@@ -27,7 +28,7 @@ K.set_session(sess)
 import keras
 from keras.datasets import mnist
 from keras.models import Model
-from keras.layers import Dense, Dropout, Flatten, Reshape, Input, Lambda, Maximum, MaxoutDense, GlobalMaxPooling2D, Conv2D, MaxPooling2D, ZeroPadding2D
+from keras.layers import Dense, Input, GlobalMaxPooling2D, Conv2D, MaxPooling2D
 from keras.constraints import max_norm
 from diversity import Diversity2D, get_stats
 import matplotlib.cm as cm
@@ -38,6 +39,20 @@ import numpy.ma as ma
 import functools
 from sklearn.metrics import confusion_matrix
 np.set_printoptions(formatter={'float': lambda x: "{0:0.3f}".format(x)})
+
+# Logger
+class Logger(object):
+    def __init__(self, log_file_path):
+        self.terminal = sys.stdout
+        self.log = open(log_file_path, "a")
+        self.isatty = lambda : False
+        self.encoding = None
+    def write(self, message):
+        self.terminal.write(message)
+        self.log.write(message)
+    def flush(self):
+        self.terminal.flush()
+        self.log.flush()
 
 ########################################
 # Plotting functions
@@ -118,18 +133,14 @@ def get_custom_loss():
         return (y_true-y_pred)*0
     return custom_loss
 
-def print_stats(W, n_filter, n_input, filter_shape, eps, my_name=""):
+def print_stats(W, n_filter, n_input, filter_shape, my_name=""):
     print(my_name)
-    sim_mat_, sim_mat, denom, det_1, det_2 = get_stats(W, n_filter, n_input, filter_shape, eps)
-    print(my_name, "sim_mat_:")
-    sim_mat_ = sess.run(sim_mat_)
-    print(sim_mat_)
+    sim_mat, det_1, det_2 = get_stats(W, n_filter, n_input, filter_shape)
+    sim_mat = sess.run(sim_mat)
     print(my_name, "sim_mat:")
-    print(sess.run(sim_mat))
-    print(my_name, "denom:")
-    print(sess.run(denom))
+    print(sim_mat)
     print(my_name, "eigenvalues of sim_mat:")
-    evals, evecs = np.linalg.eig(sim_mat_)
+    evals, evecs = np.linalg.eig(sim_mat)
     print(evals)
     print(my_name, "det_1, det_2: ", sess.run(det_1), sess.run(det_2))
 
@@ -142,22 +153,21 @@ def plot_filters(W, n_filter, n_input, filter_shape, n_epochs, my_name=""):
     pl.savefig("figures/ep_" + my_name + "_" + str(n_epochs)+".png")
     pl.close()
 
+
+sys.stdout = Logger("logs/log.txt")
 # model
-n_fmap = 6
+n_fmap = 8
 f_side = 2
-l2_ = 0.0
+l1_ = 0.0
+l2_ = 0.01
 mnorm = 2.0
 inputs = Input(shape=input_shape)
-conv_1 = Conv2D(n_fmap, (f_side,f_side),kernel_initializer='random_uniform', activation="relu", kernel_regularizer=Diversity2D(n_fmap, input_shape[0], (f_side,f_side), 0., l2_), kernel_constraint=max_norm(mnorm))(inputs)
-# conv_1 = Conv2D(n_fmap, (f_side,f_side),kernel_initializer='random_uniform', activation="relu", kernel_constraint=max_norm(mnorm))(inputs)
+conv_1 = Conv2D(n_fmap, (f_side,f_side), activation="relu", kernel_regularizer=Diversity2D(n_fmap, input_shape[0], (f_side,f_side), l1_, l2_), kernel_constraint=max_norm(mnorm))(inputs)
 mpool_2 = MaxPooling2D((2,2))(conv_1)
-conv_2 = Conv2D(n_fmap, (f_side,f_side),kernel_initializer='random_uniform', activation="relu", kernel_regularizer=Diversity2D(n_fmap, n_fmap, (f_side,f_side), 0., l2_), kernel_constraint=max_norm(mnorm))(mpool_2)
-# conv_2 = Conv2D(n_fmap, (f_side,f_side),kernel_initializer='random_uniform', activation="relu", kernel_constraint=max_norm(mnorm))(mpool_2)
+conv_2 = Conv2D(n_fmap, (f_side,f_side), activation="relu", kernel_regularizer=Diversity2D(n_fmap, n_fmap, (f_side,f_side), l1_, l2_), kernel_constraint=max_norm(mnorm))(mpool_2)
 mpool_3 = MaxPooling2D((2,2))(conv_2)
-conv_3 = Conv2D(n_fmap, (f_side,f_side),kernel_initializer='random_uniform', activation="relu", kernel_regularizer=Diversity2D(n_fmap, n_fmap, (f_side,f_side), 0., l2_), kernel_constraint=max_norm(mnorm))(mpool_3)
-# conv_3 = Conv2D(n_fmap, (f_side,f_side),kernel_initializer='random_uniform', activation="relu", kernel_constraint=max_norm(mnorm))(mpool_3)
+conv_3 = Conv2D(n_fmap, (f_side,f_side), activation="relu", kernel_regularizer=Diversity2D(n_fmap, n_fmap, (f_side,f_side), l1_, l2_), kernel_constraint=max_norm(mnorm))(mpool_3)
 gmp = GlobalMaxPooling2D()(conv_3)
-# gmp = GlobalMaxPooling2D()(conv_1)
 dense_1 = Dense(512, activation="relu")(gmp)
 predictions = Dense(num_classes, activation="softmax")(dense_1)
 model = Model(inputs=inputs, outputs=predictions)
@@ -168,8 +178,8 @@ n_epochs = 0
 for i in range(50):
     model.fit(x_train, y_train/1.25+0.1,
             batch_size=batch_size,
-            epochs=1,
-            verbose=1,
+            epochs=1*int(i!=0),
+            verbose=2,
             shuffle=False,
             steps_per_epoch=None)
     y_pred = np.argmax(model.predict(x_train), axis=1)
@@ -178,9 +188,9 @@ for i in range(50):
     print(i, ": stats: ")
     print("conf_mat:")
     print(conf_mat)
-    print_stats(model.layers[1].weights[0], n_fmap, input_shape[0], (f_side,f_side), 0., "W_0:")
-    print_stats(model.layers[3].weights[0], n_fmap, n_fmap, (f_side,f_side), 0., "W_1:")
-    print_stats(model.layers[5].weights[0], n_fmap, n_fmap, (f_side,f_side), 0., "W_2:")
+    print_stats(model.layers[1].weights[0], n_fmap, input_shape[0], (f_side,f_side), "W_0:")
+    print_stats(model.layers[3].weights[0], n_fmap, n_fmap, (f_side,f_side), "W_1:")
+    print_stats(model.layers[5].weights[0], n_fmap, n_fmap, (f_side,f_side), "W_2:")
     plot_filters(model.layers[1].get_weights()[0], n_fmap, input_shape[0], (f_side, f_side), n_epochs, "W_0")
     plot_filters(model.layers[3].get_weights()[0], n_fmap, n_fmap, (f_side, f_side), n_epochs, "W_1")
     plot_filters(model.layers[5].get_weights()[0], n_fmap, n_fmap, (f_side, f_side), n_epochs, "W_2")    
